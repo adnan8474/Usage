@@ -127,6 +127,3 @@
 +    **Terms:** This tool is for internal POCT audit use only and should not be used for clinical decision-making. Do not upload patient names, MRNs, or clinical results.
 +    """
 +)
- 
-EOF
-)
