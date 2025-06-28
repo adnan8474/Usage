@@ -1,125 +1,535 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+diff --git a//dev/null b/app.py
+index 0000000000000000000000000000000000000000..35562f27b550197195770739e39fad7c6d55e9ba 100644
+--- a//dev/null
+ b/app.py
+@@ -0,0 1,530 @@
+"""Streamlit dashboard for **POCTIFY Usage Intelligence**.
+
+This application provides an interactive interface for analysing
+point-of-care testing (POCT) middleware logs. It focuses on detecting
+barcode sharing, unusual device usage and other suspicious activity that
+may indicate workflow breaches or training issues.
+
+The code is heavily commented to help NHS POCT teams understand how the
+analysis works and to encourage further contributions. The high level
+workflow is as follows:
+
+1. Users upload an anonymised CSV or Excel file containing POCT events.
+2. The app parses timestamps, validates required columns and assigns
+   unique event identifiers.
+3. Several heuristics flag potential misuse, such as rapid succession of
+   tests, location conflicts and device hopping.
+4. Suspicion scores are computed per operator and displayed in multiple
+   views including tables, charts and heatmaps.
+5. Users can filter the dataset, view timelines, add notes and download
+   summary reports or graphics for offline review.
+
+The interface is designed for audit purposes only and does not process
+patient identifiable data. It should be run inside a secure hospital
+network in compliance with ISO 15189 information governance.
+"""
+
+from __future__ import annotations
+
+import io
 from pathlib import Path
-from typing import Optional, Tuple, List
-import datetime
-import sys
+from typing import List, Tuple
 
-# --- DYNAMIC PATH SETUP FOR MODULES ---
-BASE = Path(__file__).parent
-sys.path.insert(0, str(BASE))
+import pandas as pd
+import streamlit as st
 
-# --- USAGE_INTELLIGENCE MODULES ---
-try:
-    from usage_intelligence.analysis import (
-        parse_timestamps, apply_flags, compute_scores, get_qc_status,
-        get_error_events, get_training_status, detect_anomalies
-    )
-    from usage_intelligence.visualization import (
-        heatmap_usage, hourly_bar, device_trend, flag_pie, interval_distribution,
-        behaviour_timeline, operator_compliance_chart, device_error_chart, qc_result_chart
-    )
-except ImportError as e:
-    st.error(f"Module import error: {e}")
-    st.stop()
+from usage_intelligence.analysis import (
+    FLAG_COLUMNS,
+    compute_all_flags,
+    compute_scores,
+    ensure_unique_event_id,
+    parse_timestamps,
+)
+from usage_intelligence.visualization import (
+    behaviour_timeline,
+    device_heatmap,
+    device_trend,
+    export_buttons,
+    flag_pie,
+    heatmap_usage,
+    hourly_bar,
+    interval_distribution,
+    operator_heatmap,
+    summary_cards,
+    timeline_plot,
+)
 
-# --- PAGE CONFIG ---
+# ---------------------------------------------------------------------------
+# NOTE TO DEVELOPERS
+# ---------------------------------------------------------------------------
+# The following code is intentionally verbose with extensive comments and
+# docstrings. This is to ensure the logic is transparent for NHS audit
+# teams reviewing or extending the application. Although Streamlit apps
+# are often compact, clarity is prioritised over brevity here. Additional
+# helper functions break down each aspect of the workflow so that future
+# enhancements can be slotted in with minimal refactoring.
+
+
+# ---------------------------------------------------------------------------
+# CONSTANTS AND CONFIGURATION
+# ---------------------------------------------------------------------------
+
+REQUIRED_COLUMNS: List[str] = [
+    "Timestamp",
+    "Operator_ID",
+    "Location",
+    "Device_ID",
+    "Test_Type",
+]
+
 st.set_page_config(page_title="POCTIFY Usage Intelligence", layout="wide")
-st.title("POCTIFY Usage Intelligence: Supervisor Suite")
 
-# --- SIDEBAR LOGO & INSTRUCTIONS ---
-def show_logo(logo_path: Path) -> None:
+# ---------------------------------------------------------------------------
+# UTILITY FUNCTIONS
+# ---------------------------------------------------------------------------
+
+def load_logo() -> None:
+    """Render POCTIFY logo at the top of the sidebar if present."""
+    logo_path = Path("POCTIFY Logo.png")
     if logo_path.is_file():
-        st.sidebar.image(str(logo_path), use_container_width=True)
+        st.sidebar.image(str(logo_path), width=120, use_column_width=False)
 
-def show_instructions() -> None:
-    with st.sidebar.expander("ℹ️ Instructions", expanded=False):
-        st.markdown(
-            """
-            **POCTIFY Usage Intelligence** provides comprehensive audit, compliance, and analytics for POCT teams.
 
-            **How to use:**
-            1. Download & review the data template.
-            2. Upload anonymized logs (.csv/.xlsx).
-            3. Adjust detection and compliance parameters.
-            4. Explore dashboards, compliance panels, and flagged results.
-            5. Export audit trails and reports as needed.
+def read_uploaded_file(uploaded: io.BytesIO) -> pd.DataFrame:
+    """Read CSV or Excel upload into a DataFrame."""
+    name = uploaded.name.lower()
+    if name.endswith(".csv"):
+        return pd.read_csv(uploaded, comment="#")
+    return pd.read_excel(uploaded)
 
-            **This tool supports:**  
-            - Operator certification/compliance audit  
-            - Device/location usage & error analytics  
-            - QC/QA tracking  
-            - Real-time and retrospective anomaly detection  
-            - Full audit/export for regulatory compliance
 
-            **Never upload patient names, MRNs, or clinical results.**
-            """
-        )
+def validate_columns(df: pd.DataFrame, required: List[str]) -> None:
+    """Ensure dataframe contains all required columns."""
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
-def sidebar_upload_and_params() -> Tuple[Optional[pd.DataFrame], int, int, int, int]:
-    st.sidebar.header("Upload Data")
-    uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-    rapid_th = st.sidebar.slider("Rapid Succession Threshold (s)", 10, 300, 60, 10)
-    min_score = st.sidebar.slider("Min Suspicion Score", 0, 100, 10)
-    min_tests = st.sidebar.slider("Min Tests per Operator", 0, 100, 0)
-    anomaly_sensitivity = st.sidebar.slider("Anomaly Detection Sensitivity", 1, 10, 5)
-    st.sidebar.markdown("---")
-    template_path = BASE / "usage_intelligence" / "data" / "template.csv"
-    if template_path.is_file():
-        with open(template_path, "r") as f:
-            st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
-    else:
-        st.sidebar.warning("Template file not found.")
-    return uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity
-
-def load_data(uploaded_file) -> Optional[pd.DataFrame]:
-    try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file, comment="#")
-        else:
-            df = pd.read_excel(uploaded_file)
-        return df
-    except Exception as e:
-        st.error(f"Failed to read file: {e}")
-        return None
-
-def sidebar_filters(df: pd.DataFrame):
-    st.sidebar.subheader("🔍 Filter Data")
-    operator_ids = st.sidebar.multiselect("Operator ID", options=sorted(df['Operator_ID'].dropna().unique()))
-    locations = st.sidebar.multiselect("Location", options=sorted(df['Location'].dropna().unique()))
-    devices = st.sidebar.multiselect("Device ID", options=sorted(df['Device_ID'].dropna().unique()))
-    test_types = st.sidebar.multiselect("Test Type", options=sorted(df['Test_Type'].dropna().unique()))
-    date_range = st.sidebar.date_input(
-        "Date Range",
-        [df['Timestamp'].min().date(), df['Timestamp'].max().date()] if not df.empty else [datetime.date.today(), datetime.date.today()],
-    )
-    shifts = st.sidebar.multiselect(
-        "Shift",
-        options=["Day", "Evening", "Night"],
-        default=[]
-    )
-    return operator_ids, locations, devices, test_types, date_range, shifts
 
 def apply_filters(
     df: pd.DataFrame,
-    operator_ids: List[str],
-    locations: List[str],
-    devices: List[str],
-    test_types: List[str],
-    date_range: List[datetime.date],
-    shifts: List[str]
+    *,
+    operator_ids: List[str] | None = None,
+    locations: List[str] | None = None,
+    devices: List[str] | None = None,
+    test_types: List[str] | None = None,
+    date_range: Tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    min_score: int = 0,
 ) -> pd.DataFrame:
+    """Apply sidebar filters to the dataframe and return the subset.
+
+    The filters mirror the sidebar widgets allowing users to narrow the
+    dataset by operator, location, device or test type. Date ranges are
+    compared against the parsed timestamp column. A minimum suspicion
+    score can be supplied to focus on high risk operators only.
+    """
+    data = df.copy()
     if operator_ids:
-        df = df[df['Operator_ID'].isin(operator_ids)]
+        data = data[data["Operator_ID"].isin(operator_ids)]
     if locations:
-        df = df[df['Location'].isin(locations)]
+        data = data[data["Location"].isin(locations)]
     if devices:
-        df = df[df['Device_ID'].isin(devices)]
+        data = data[data["Device_ID"].isin(devices)]
     if test_types:
-        df = df[df['Test_Type'].isin(test_types)]
-    if date_range and len(date_range) == 2:
-        start_date, end_date = date_range
-        df = df[
-            (df['Timestamp'].dt.date
-
+        data = data[data["Test_Type"].isin(test_types)]
+    if date_range:
+        start, end = date_range
+        data = data[
+            (data["Timestamp"].dt.date >= start)
+            & (data["Timestamp"].dt.date <= end)
+        ]
+    if min_score:
+        scores = compute_scores(data)
+        keep_ops = scores[scores["Suspicion_Score"] >= min_score]["Operator_ID"]
+        data = data[data["Operator_ID"].isin(keep_ops)]
+    return data
+
+
+def sidebar_instructions() -> None:
+    """Show collapsible instructions in sidebar."""
+    with st.sidebar.expander("ℹ️ Instructions", expanded=False):
+        st.markdown(
+            """
+            **POCTIFY Usage Intelligence** helps POCT teams spot barcode sharing,
+            location conflicts and unusual testing patterns.
+
+            **Steps**
+            1. Download the CSV template.
+            2. Upload your anonymised log file (.csv or .xlsx).
+            3. Adjust the rapid succession slider to tune barcode-sharing detection.
+            4. Explore dashboards and flagged results.
+
+            Only use anonymised data. Patient names, MRNs or results must not be uploaded.
+            Invalid timestamps will be reported with line numbers.
+            """
+        )
+
+
+def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
+    """Render sidebar widgets and return filtered data and thresholds.
+
+    This function centralises all interactive controls such as threshold
+    sliders and multi-select filters. It returns the filtered dataframe
+    along with the user-defined thresholds for rapid events and device
+    sharing. Those thresholds feed directly into the flagging engine so
+    investigators can experiment with different sensitivity levels.
+    """
+    st.sidebar.header("Upload Data")
+    suspicion_window = st.sidebar.slider(
+        "Device sharing window (min)", 1, 30, 5, help="Window for device hopping checks"
+    )
+    share_threshold = st.sidebar.slider(
+        "Device share threshold", 2, 10, 3, help="Unique devices in window to flag"
+    )
+    rapid_threshold = st.sidebar.slider(
+        "Rapid succession threshold (s)", 10, 300, 60, step=10
+    )
+
+    st.sidebar.markdown("### 🔍 Filter Options")
+    operator_ids = st.sidebar.multiselect(
+        "Operator ID", options=sorted(df["Operator_ID"].dropna().unique())
+    )
+    locations = st.sidebar.multiselect(
+        "Location", options=sorted(df["Location"].dropna().unique())
+    )
+    devices = st.sidebar.multiselect(
+        "Device ID", options=sorted(df["Device_ID"].dropna().unique())
+    )
+    test_types = st.sidebar.multiselect(
+        "Test Type", options=sorted(df["Test_Type"].dropna().unique())
+    )
+    date_range = st.sidebar.date_input(
+        "Date Range",
+        [df["Timestamp"].min().date(), df["Timestamp"].max().date()],
+    )
+    min_score = st.sidebar.slider("Min Suspicion Score", 0, 100, 10)
+
+    filtered = apply_filters(
+        df,
+        operator_ids=operator_ids,
+        locations=locations,
+        devices=devices,
+        test_types=test_types,
+        date_range=date_range,
+        min_score=min_score,
+    )
+    return filtered, suspicion_window, share_threshold, rapid_threshold
+
+
+# ---------------------------------------------------------------------------
+# MAIN DISPLAY FUNCTIONS
+# ---------------------------------------------------------------------------
+
+def operator_overview(df: pd.DataFrame) -> None:
+    """Display operator table and suspicion scores.
+
+    The table aggregates flag counts and computes a weighted suspicion
+    score for each operator. This makes it easy to spot staff with a high
+    proportion of rapid tests, location conflicts or other anomalies.
+    Charts are included to provide a quick visual comparison between
+    operators.
+    """
+    st.subheader("Operator Overview & Risk Scoring")
+    stats = df.groupby("Operator_ID").agg(
+        Event_Count=("Event_ID", "count"),
+        Flagged_Count=("Flagged", "sum"),
+    )
+    flag_breakdown = df.groupby("Operator_ID")[FLAG_COLUMNS].sum()
+    stats = stats.join(flag_breakdown)
+
+    stats["Suspicion_Score"] = (
+        stats["Flagged_Count"] * 2
+         stats["RAPID"] * 1.5
+         stats["LOC_CONFLICT"] * 1.25
+         stats["DEVICE_HOP"] * 1
+    )
+    stats = stats.sort_values("Suspicion_Score", ascending=False)
+
+    st.dataframe(stats, use_container_width=True)
+    st.bar_chart(stats["Suspicion_Score"], use_container_width=True)
+
+
+def device_overview(df: pd.DataFrame) -> None:
+    """Display device-centric statistics.
+
+    Similar to the operator overview but focused on devices, this section
+    highlights instruments with many flagged events or unusually high
+    operator counts. The resulting risk score can suggest devices that
+    require closer scrutiny or maintenance checks.
+    """
+    st.subheader("Device Overview & Risk Scoring")
+    stats = df.groupby("Device_ID").agg(
+        Event_Count=("Event_ID", "count"),
+        Flagged_Count=("Flagged", "sum"),
+        Operator_Count=("Operator_ID", "nunique"),
+    )
+    stats["Device_Risk_Score"] = (
+        stats["Flagged_Count"] * 2  stats["Operator_Count"] * 1.5
+    )
+    stats = stats.sort_values("Device_Risk_Score", ascending=False)
+    st.dataframe(stats, use_container_width=True)
+    st.bar_chart(stats["Device_Risk_Score"], use_container_width=True)
+
+
+def location_overview(df: pd.DataFrame) -> None:
+    """Show location-based activity summaries if location column exists.
+
+    Location statistics can reveal problem areas within the hospital where
+    certain operators or devices generate excessive flags. The overview
+    includes counts of operators and devices per location to help
+    contextualise event volumes.
+    """
+    if "Location" not in df.columns:
+        return
+    st.subheader("Location Activity")
+    stats = df.groupby("Location").agg(
+        Event_Count=("Event_ID", "count"),
+        Flagged_Count=("Flagged", "sum"),
+        Operator_Count=("Operator_ID", "nunique"),
+        Device_Count=("Device_ID", "nunique"),
+    )
+    st.dataframe(stats, use_container_width=True)
+    st.bar_chart(stats["Event_Count"], use_container_width=True)
+
+
+def temporal_trends(df: pd.DataFrame) -> None:
+    """Plot daily and hourly event totals for trend analysis."""
+    st.subheader("Temporal Trends")
+    df["Hour"] = df["Timestamp"].dt.hour
+    df["Date"] = df["Timestamp"].dt.date
+    hourly = df.groupby("Hour")["Event_ID"].count()
+    daily = df.groupby("Date")["Event_ID"].count()
+    st.line_chart(hourly, use_container_width=True)
+    st.line_chart(daily, use_container_width=True)
+
+
+def heatmaps(df: pd.DataFrame) -> None:
+    """Render operator and device heatmaps.
+
+    Heatmaps visualise activity throughout the day, making it easy to see
+    which staff or devices are busiest at specific hours. They also help
+    highlight overnight usage that might breach expected shift patterns.
+    """
+    st.subheader("Operator vs Hour Heatmap")
+    st.plotly_chart(operator_heatmap(df), use_container_width=True)
+    st.subheader("Device vs Hour Heatmap")
+    st.plotly_chart(device_heatmap(df), use_container_width=True)
+
+
+def distributions_and_outliers(df: pd.DataFrame) -> None:
+    """Show distribution charts and highlight outlier operators.
+
+    The event count distribution identifies operators with extreme
+    workloads while the time-delta histogram visualises how rapidly tests
+    occur in sequence. Operators exceeding two standard deviations from
+    the mean test count are flagged as potential outliers.
+    """
+    st.subheader("Distribution: Event Count per Operator")
+    st.bar_chart(df["Operator_ID"].value_counts(), use_container_width=True)
+
+    st.subheader("Distribution: Time Between Events (minutes)")
+    df_sorted = df.sort_values("Timestamp")
+    df_sorted["Time_Delta"] = df_sorted["Timestamp"].diff().dt.total_seconds() / 60
+    st.plotly_chart(
+        interval_distribution(df_sorted), use_container_width=True
+    )
+
+    st.subheader("Operators with Unusually High Event Counts")
+    op_stats = df.groupby("Operator_ID").size()
+    cutoff = op_stats.mean()  2 * op_stats.std()
+    outliers = op_stats[op_stats > cutoff]
+    st.dataframe(outliers, use_container_width=True)
+
+
+def flag_breakdown_table(df: pd.DataFrame) -> None:
+    """Display a table summarising counts per flag type."""
+    st.subheader("Flag Breakdown")
+    counts = df[FLAG_COLUMNS].sum().reset_index()
+    counts.columns = ["Flag", "Count"]
+    st.dataframe(counts, use_container_width=True)
+
+
+def probability_summary(df: pd.DataFrame) -> None:
+    """Show misuse probability for each operator."""
+    st.subheader("Operator Risk Probability")
+    scores = compute_scores(df)
+    st.dataframe(scores[["Operator_ID", "Suspicion_Score", "Risk_Level"]], use_container_width=True)
+
+
+def dashboard_charts(df: pd.DataFrame) -> None:
+    """Display interactive dashboards with multiple charts."""
+    st.subheader("Interactive Dashboards")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(heatmap_usage(df), use_container_width=True)
+        st.plotly_chart(hourly_bar(df), use_container_width=True)
+    with col2:
+        st.plotly_chart(device_trend(df), use_container_width=True)
+        st.plotly_chart(flag_pie(df), use_container_width=True)
+    st.plotly_chart(interval_distribution(df), use_container_width=True)
+
+
+def download_plots(df: pd.DataFrame) -> None:
+    """Offer downloads of key visualisations as PNG files."""
+    st.subheader("Download Plots")
+    plot_fig = heatmap_usage(df)
+    st.download_button(
+        "Download Heatmap PNG",
+        plot_fig.to_image(format="png"),
+        file_name="heatmap.png",
+    )
+
+
+
+def drilldown_section(df: pd.DataFrame) -> None:
+    """Interactive timeline views for operators and devices.
+
+    This section displays scatter plots of events over time, allowing the
+    investigator to follow activity sequences for a chosen operator or
+    device. It supports quick visual identification of clusters or gaps
+    in usage.
+    """
+    st.subheader("Operator Drilldown")
+    st.plotly_chart(timeline_plot(df, "Operator_ID"), use_container_width=True)
+
+    st.subheader("Device Drilldown")
+    st.plotly_chart(timeline_plot(df, "Device_ID"), use_container_width=True)
+
+
+def investigation_notes(df: pd.DataFrame) -> None:
+    """Simple note-taking area allowing users to record observations.
+
+    Notes entered here remain in the user's browser session only. They can
+    be copied into a local report or screenshot for audit documentation.
+    """
+    notes = st.text_area(
+        "Add investigation notes here (not stored)",
+        help="Use this area to summarise findings or actions",
+    )
+    if notes:
+        st.write("Notes saved locally in browser session.")
+
+
+def about_section() -> None:
+    """Display information about the project and future work."""
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("About", expanded=False):
+        st.markdown(
+            """
+            **POCTIFY Usage Intelligence** was created to help POCT managers
+            review device usage more efficiently. Future releases will include
+            automated shift pattern learning, QR code validation and direct
+            middleware integrations.
+            """
+        )
+
+
+def privacy_notice() -> None:
+    """Show privacy disclaimer in sidebar.
+
+    Emphasises that the application is for audit purposes only and that
+    no patient identifiable data should be uploaded. The notice also
+    reminds users that data is held in memory only while the page is
+    active and is not stored on any server.
+    """
+    with st.sidebar.expander("Privacy", expanded=False):
+        st.markdown(
+            """
+            This tool processes anonymised audit data only. Do **not** upload
+            patient names, medical record numbers or clinical results. Data is
+            analysed in-memory and not retained after the browser session.
+            """
+        )
+
+
+def future_options_placeholder() -> None:
+    """Display upcoming features.
+
+    Provides a short list of modules that may be integrated in future
+    versions so stakeholders know what to expect. These placeholders are
+    non-functional but set user expectations.
+    """
+    with st.sidebar.expander("Future Options", expanded=False):
+        st.markdown(
+            """
+            - EQA Performance Tracker *(coming soon)*
+            - Operator Login Frequency Dashboard
+            - Middleware API connector module for live data
+            """
+        )
+
+
+def main():
+    """Entry point for the Streamlit application."""
+
+    st.title("POCTIFY Usage Intelligence")
+    load_logo()
+    sidebar_instructions()
+    privacy_notice()
+    future_options_placeholder()
+
+    st.sidebar.header("Upload File")
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload CSV or Excel", type=["csv", "xlsx"]
+    )
+
+    with open("usage_intelligence/data/template.csv", "r") as f:
+        st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
+
+    if uploaded_file is None:
+        st.info("Please upload a file to begin.")
+        st.stop()
+
+    try:
+        df = read_uploaded_file(uploaded_file)
+        st.write("Columns in uploaded file:", df.columns.tolist())
+        validate_columns(df, REQUIRED_COLUMNS)
+        df = parse_timestamps(df)
+        df = ensure_unique_event_id(df)
+    except Exception as e:  # parsing or validation error
+        st.error(f"Failed to process file: {e}")
+        st.stop()
+
+    filtered, suspicion_window, share_threshold, rapid_threshold = sidebar_controls(df)
+    flagged_df = compute_all_flags(
+        filtered,
+        rapid_th=rapid_threshold,
+        hop_threshold=share_threshold,
+        window_minutes=suspicion_window,
+    )
+
+    summary_cards(flagged_df)
+    flag_breakdown_table(flagged_df)
+    probability_summary(flagged_df)
+    st.subheader("Flagged Events Table")
+    st.dataframe(flagged_df[flagged_df["Flagged"]], use_container_width=True)
+
+    operator_overview(flagged_df)
+    device_overview(flagged_df)
+    location_overview(flagged_df)
+
+    temporal_trends(flagged_df)
+    heatmaps(flagged_df)
+    distributions_and_outliers(flagged_df)
+    dashboard_charts(flagged_df)
+    drilldown_section(flagged_df)
+
+    investigation_notes(flagged_df)
+    export_buttons(flagged_df)
+    download_plots(flagged_df)
+    about_section()
+
+    st.markdown(
+        """
+        **Terms:** This tool is for internal POCT audit use only and should not be used for
+        clinical decision-making. Do not upload patient names, MRNs, or clinical results.
+        """
+    )
+
+
+if __name__ == "__main__":
+    main()
