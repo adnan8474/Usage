@@ -5,7 +5,8 @@ from usage_intelligence.analysis import (
     parse_timestamps, apply_flags, compute_scores, detect_sessions, filter_events, session_summary
 )
 from usage_intelligence.visualization import (
-    barcode_timeline, barcode_heatmap, operator_heatmap, session_drilldown, summary_cards, rules_panel, investigation_notes, event_table
+    barcode_timeline, barcode_heatmap, operator_heatmap, session_drilldown,
+    summary_cards, rules_panel, investigation_notes, event_table
 )
 from usage_intelligence.rules import RULES, user_rule_builder
 from usage_intelligence.investigation import InvestigationTracker
@@ -32,10 +33,12 @@ def sidebar_upload_and_params():
     st.sidebar.header("Upload Data")
     uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     st.sidebar.markdown("---")
-    try:
-        with open("usage_intelligence/data/template.csv", "r") as f:
+    # Template download
+    template_path = Path("usage_intelligence/data/template.csv")
+    if template_path.is_file():
+        with open(template_path, "r") as f:
             st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
-    except Exception:
+    else:
         st.sidebar.warning("Template not found.")
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Detection Parameters")
@@ -50,8 +53,8 @@ def validate_columns(df):
         raise ValueError(f"Missing required columns: {missing}\nColumns found: {df.columns.tolist()}")
 
 def read_uploaded_file(uploaded_file):
-    # Skip comment lines and blank lines
     if uploaded_file.name.endswith(".csv"):
+        # Skip comment lines and blank lines
         df = pd.read_csv(uploaded_file, comment="#")
     else:
         df = pd.read_excel(uploaded_file)
