@@ -1,9 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a//dev/null b/app.py
-index 0000000000000000000000000000000000000000..00e73e662d9413eeaeef420e8a661918cfb6445f 100644
---- a//dev/null
-+++ b/app.py
-@@ -0,0 +1,129 @@
 +import streamlit as st
 +import pandas as pd
 +from pathlib import Path
