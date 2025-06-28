@@ -1,8 +1,3 @@
-diff --git a//dev/null b/app.py
-index 0000000000000000000000000000000000000000..35562f27b550197195770739e39fad7c6d55e9ba 100644
---- a//dev/null
- b/app.py
-@@ -0,0 1,530 @@
 """Streamlit dashboard for **POCTIFY Usage Intelligence**.
 
 This application provides an interactive interface for analysing
@@ -533,3 +528,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 
+EOF
+)
