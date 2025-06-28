@@ -89,7 +89,6 @@ def load_logo() -> None:
     if logo_path.is_file():
         st.sidebar.image(str(logo_path), width=120, use_column_width=False)
 
-
 def read_uploaded_file(uploaded: io.BytesIO) -> pd.DataFrame:
     """Read CSV or Excel upload into a DataFrame."""
     name = uploaded.name.lower()
@@ -97,13 +96,11 @@ def read_uploaded_file(uploaded: io.BytesIO) -> pd.DataFrame:
         return pd.read_csv(uploaded, comment="#")
     return pd.read_excel(uploaded)
 
-
 def validate_columns(df: pd.DataFrame, required: List[str]) -> None:
     """Ensure dataframe contains all required columns."""
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
-
 
 def apply_filters(
     df: pd.DataFrame,
@@ -131,7 +128,7 @@ def apply_filters(
         data = data[data["Device_ID"].isin(devices)]
     if test_types:
         data = data[data["Test_Type"].isin(test_types)]
-    if date_range:
+    if date_range and len(date_range) == 2:
         start, end = date_range
         data = data[
             (data["Timestamp"].dt.date >= start)
@@ -142,7 +139,6 @@ def apply_filters(
         keep_ops = scores[scores["Suspicion_Score"] >= min_score]["Operator_ID"]
         data = data[data["Operator_ID"].isin(keep_ops)]
     return data
-
 
 def sidebar_instructions() -> None:
     """Show collapsible instructions in sidebar."""
@@ -163,16 +159,8 @@ def sidebar_instructions() -> None:
             """
         )
 
-
 def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
-    """Render sidebar widgets and return filtered data and thresholds.
-
-    This function centralises all interactive controls such as threshold
-    sliders and multi-select filters. It returns the filtered dataframe
-    along with the user-defined thresholds for rapid events and device
-    sharing. Those thresholds feed directly into the flagging engine so
-    investigators can experiment with different sensitivity levels.
-    """
+    """Render sidebar widgets and return filtered data and thresholds."""
     st.sidebar.header("Upload Data")
     suspicion_window = st.sidebar.slider(
         "Device sharing window (min)", 1, 30, 5, help="Window for device hopping checks"
@@ -183,7 +171,6 @@ def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
     rapid_threshold = st.sidebar.slider(
         "Rapid succession threshold (s)", 10, 300, 60, step=10
     )
-
     st.sidebar.markdown("### 🔍 Filter Options")
     operator_ids = st.sidebar.multiselect(
         "Operator ID", options=sorted(df["Operator_ID"].dropna().unique())
@@ -197,12 +184,19 @@ def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
     test_types = st.sidebar.multiselect(
         "Test Type", options=sorted(df["Test_Type"].dropna().unique())
     )
-    date_range = st.sidebar.date_input(
-        "Date Range",
-        [df["Timestamp"].min().date(), df["Timestamp"].max().date()],
-    )
+    # Dates default to min/max in data
+    if not df.empty:
+        date_range = st.sidebar.date_input(
+            "Date Range",
+            [df["Timestamp"].min().date(), df["Timestamp"].max().date()],
+        )
+    else:
+        import datetime
+        date_range = st.sidebar.date_input(
+            "Date Range",
+            [datetime.date.today(), datetime.date.today()],
+        )
     min_score = st.sidebar.slider("Min Suspicion Score", 0, 100, 10)
-
     filtered = apply_filters(
         df,
         operator_ids=operator_ids,
@@ -214,20 +208,12 @@ def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
     )
     return filtered, suspicion_window, share_threshold, rapid_threshold
 
-
 # ---------------------------------------------------------------------------
 # MAIN DISPLAY FUNCTIONS
 # ---------------------------------------------------------------------------
 
 def operator_overview(df: pd.DataFrame) -> None:
-    """Display operator table and suspicion scores.
-
-    The table aggregates flag counts and computes a weighted suspicion
-    score for each operator. This makes it easy to spot staff with a high
-    proportion of rapid tests, location conflicts or other anomalies.
-    Charts are included to provide a quick visual comparison between
-    operators.
-    """
+    """Display operator table and suspicion scores."""
     st.subheader("Operator Overview & Risk Scoring")
     stats = df.groupby("Operator_ID").agg(
         Event_Count=("Event_ID", "count"),
@@ -235,27 +221,18 @@ def operator_overview(df: pd.DataFrame) -> None:
     )
     flag_breakdown = df.groupby("Operator_ID")[FLAG_COLUMNS].sum()
     stats = stats.join(flag_breakdown)
-
     stats["Suspicion_Score"] = (
         stats["Flagged_Count"] * 2
-         stats["RAPID"] * 1.5
-         stats["LOC_CONFLICT"] * 1.25
-         stats["DEVICE_HOP"] * 1
+        + stats.get("RAPID", 0) * 1.5
+        + stats.get("LOC_CONFLICT", 0) * 1.25
+        + stats.get("DEVICE_HOP", 0) * 1
     )
     stats = stats.sort_values("Suspicion_Score", ascending=False)
-
     st.dataframe(stats, use_container_width=True)
     st.bar_chart(stats["Suspicion_Score"], use_container_width=True)
 
-
 def device_overview(df: pd.DataFrame) -> None:
-    """Display device-centric statistics.
-
-    Similar to the operator overview but focused on devices, this section
-    highlights instruments with many flagged events or unusually high
-    operator counts. The resulting risk score can suggest devices that
-    require closer scrutiny or maintenance checks.
-    """
+    """Display device-centric statistics."""
     st.subheader("Device Overview & Risk Scoring")
     stats = df.groupby("Device_ID").agg(
         Event_Count=("Event_ID", "count"),
@@ -263,21 +240,14 @@ def device_overview(df: pd.DataFrame) -> None:
         Operator_Count=("Operator_ID", "nunique"),
     )
     stats["Device_Risk_Score"] = (
-        stats["Flagged_Count"] * 2  stats["Operator_Count"] * 1.5
+        stats["Flagged_Count"] * 2 + stats["Operator_Count"] * 1.5
     )
     stats = stats.sort_values("Device_Risk_Score", ascending=False)
     st.dataframe(stats, use_container_width=True)
     st.bar_chart(stats["Device_Risk_Score"], use_container_width=True)
 
-
 def location_overview(df: pd.DataFrame) -> None:
-    """Show location-based activity summaries if location column exists.
-
-    Location statistics can reveal problem areas within the hospital where
-    certain operators or devices generate excessive flags. The overview
-    includes counts of operators and devices per location to help
-    contextualise event volumes.
-    """
+    """Show location-based activity summaries if location column exists."""
     if "Location" not in df.columns:
         return
     st.subheader("Location Activity")
@@ -290,7 +260,6 @@ def location_overview(df: pd.DataFrame) -> None:
     st.dataframe(stats, use_container_width=True)
     st.bar_chart(stats["Event_Count"], use_container_width=True)
 
-
 def temporal_trends(df: pd.DataFrame) -> None:
     """Plot daily and hourly event totals for trend analysis."""
     st.subheader("Temporal Trends")
@@ -301,59 +270,39 @@ def temporal_trends(df: pd.DataFrame) -> None:
     st.line_chart(hourly, use_container_width=True)
     st.line_chart(daily, use_container_width=True)
 
-
 def heatmaps(df: pd.DataFrame) -> None:
-    """Render operator and device heatmaps.
-
-    Heatmaps visualise activity throughout the day, making it easy to see
-    which staff or devices are busiest at specific hours. They also help
-    highlight overnight usage that might breach expected shift patterns.
-    """
+    """Render operator and device heatmaps."""
     st.subheader("Operator vs Hour Heatmap")
     st.plotly_chart(operator_heatmap(df), use_container_width=True)
     st.subheader("Device vs Hour Heatmap")
     st.plotly_chart(device_heatmap(df), use_container_width=True)
 
-
 def distributions_and_outliers(df: pd.DataFrame) -> None:
-    """Show distribution charts and highlight outlier operators.
-
-    The event count distribution identifies operators with extreme
-    workloads while the time-delta histogram visualises how rapidly tests
-    occur in sequence. Operators exceeding two standard deviations from
-    the mean test count are flagged as potential outliers.
-    """
+    """Show distribution charts and highlight outlier operators."""
     st.subheader("Distribution: Event Count per Operator")
     st.bar_chart(df["Operator_ID"].value_counts(), use_container_width=True)
-
     st.subheader("Distribution: Time Between Events (minutes)")
     df_sorted = df.sort_values("Timestamp")
     df_sorted["Time_Delta"] = df_sorted["Timestamp"].diff().dt.total_seconds() / 60
-    st.plotly_chart(
-        interval_distribution(df_sorted), use_container_width=True
-    )
-
+    st.plotly_chart(interval_distribution(df_sorted), use_container_width=True)
     st.subheader("Operators with Unusually High Event Counts")
     op_stats = df.groupby("Operator_ID").size()
-    cutoff = op_stats.mean()  2 * op_stats.std()
+    cutoff = op_stats.mean() + 2 * op_stats.std()
     outliers = op_stats[op_stats > cutoff]
     st.dataframe(outliers, use_container_width=True)
-
 
 def flag_breakdown_table(df: pd.DataFrame) -> None:
     """Display a table summarising counts per flag type."""
     st.subheader("Flag Breakdown")
-    counts = df[FLAG_COLUMNS].sum().reset_index()
+    counts = pd.DataFrame(df[FLAG_COLUMNS].sum()).reset_index()
     counts.columns = ["Flag", "Count"]
     st.dataframe(counts, use_container_width=True)
-
 
 def probability_summary(df: pd.DataFrame) -> None:
     """Show misuse probability for each operator."""
     st.subheader("Operator Risk Probability")
     scores = compute_scores(df)
     st.dataframe(scores[["Operator_ID", "Suspicion_Score", "Risk_Level"]], use_container_width=True)
-
 
 def dashboard_charts(df: pd.DataFrame) -> None:
     """Display interactive dashboards with multiple charts."""
@@ -367,7 +316,6 @@ def dashboard_charts(df: pd.DataFrame) -> None:
         st.plotly_chart(flag_pie(df), use_container_width=True)
     st.plotly_chart(interval_distribution(df), use_container_width=True)
 
-
 def download_plots(df: pd.DataFrame) -> None:
     """Offer downloads of key visualisations as PNG files."""
     st.subheader("Download Plots")
@@ -378,36 +326,21 @@ def download_plots(df: pd.DataFrame) -> None:
         file_name="heatmap.png",
     )
 
-
-
 def drilldown_section(df: pd.DataFrame) -> None:
-    """Interactive timeline views for operators and devices.
-
-    This section displays scatter plots of events over time, allowing the
-    investigator to follow activity sequences for a chosen operator or
-    device. It supports quick visual identification of clusters or gaps
-    in usage.
-    """
+    """Interactive timeline views for operators and devices."""
     st.subheader("Operator Drilldown")
     st.plotly_chart(timeline_plot(df, "Operator_ID"), use_container_width=True)
-
     st.subheader("Device Drilldown")
     st.plotly_chart(timeline_plot(df, "Device_ID"), use_container_width=True)
 
-
 def investigation_notes(df: pd.DataFrame) -> None:
-    """Simple note-taking area allowing users to record observations.
-
-    Notes entered here remain in the user's browser session only. They can
-    be copied into a local report or screenshot for audit documentation.
-    """
+    """Simple note-taking area allowing users to record observations."""
     notes = st.text_area(
         "Add investigation notes here (not stored)",
         help="Use this area to summarise findings or actions",
     )
     if notes:
         st.write("Notes saved locally in browser session.")
-
 
 def about_section() -> None:
     """Display information about the project and future work."""
@@ -422,15 +355,8 @@ def about_section() -> None:
             """
         )
 
-
 def privacy_notice() -> None:
-    """Show privacy disclaimer in sidebar.
-
-    Emphasises that the application is for audit purposes only and that
-    no patient identifiable data should be uploaded. The notice also
-    reminds users that data is held in memory only while the page is
-    active and is not stored on any server.
-    """
+    """Show privacy disclaimer in sidebar."""
     with st.sidebar.expander("Privacy", expanded=False):
         st.markdown(
             """
@@ -440,14 +366,8 @@ def privacy_notice() -> None:
             """
         )
 
-
 def future_options_placeholder() -> None:
-    """Display upcoming features.
-
-    Provides a short list of modules that may be integrated in future
-    versions so stakeholders know what to expect. These placeholders are
-    non-functional but set user expectations.
-    """
+    """Display upcoming features."""
     with st.sidebar.expander("Future Options", expanded=False):
         st.markdown(
             """
@@ -457,35 +377,33 @@ def future_options_placeholder() -> None:
             """
         )
 
-
 def main():
     """Entry point for the Streamlit application."""
-
     st.title("POCTIFY Usage Intelligence")
     load_logo()
     sidebar_instructions()
     privacy_notice()
     future_options_placeholder()
-
     st.sidebar.header("Upload File")
     uploaded_file = st.sidebar.file_uploader(
         "Upload CSV or Excel", type=["csv", "xlsx"]
     )
-
-    with open("usage_intelligence/data/template.csv", "r") as f:
-        st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
+    # Download template
+    template_path = Path("usage_intelligence/data/template.csv")
+    if template_path.is_file():
+        with open(template_path, "r") as f:
+            st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
 
     if uploaded_file is None:
         st.info("Please upload a file to begin.")
         st.stop()
-
     try:
         df = read_uploaded_file(uploaded_file)
         st.write("Columns in uploaded file:", df.columns.tolist())
         validate_columns(df, REQUIRED_COLUMNS)
         df = parse_timestamps(df)
         df = ensure_unique_event_id(df)
-    except Exception as e:  # parsing or validation error
+    except Exception as e:
         st.error(f"Failed to process file: {e}")
         st.stop()
 
@@ -502,29 +420,24 @@ def main():
     probability_summary(flagged_df)
     st.subheader("Flagged Events Table")
     st.dataframe(flagged_df[flagged_df["Flagged"]], use_container_width=True)
-
     operator_overview(flagged_df)
     device_overview(flagged_df)
     location_overview(flagged_df)
-
     temporal_trends(flagged_df)
     heatmaps(flagged_df)
     distributions_and_outliers(flagged_df)
     dashboard_charts(flagged_df)
     drilldown_section(flagged_df)
-
     investigation_notes(flagged_df)
     export_buttons(flagged_df)
     download_plots(flagged_df)
     about_section()
-
     st.markdown(
         """
         **Terms:** This tool is for internal POCT audit use only and should not be used for
         clinical decision-making. Do not upload patient names, MRNs, or clinical results.
         """
     )
-
 
 if __name__ == "__main__":
     main()
