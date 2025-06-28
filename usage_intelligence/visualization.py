@@ -4,9 +4,9 @@ import plotly.express as px
 def summary_cards(events):
     """Display key metrics summarising the flagged dataset."""
     st.metric("Flagged Events", len(events))
+    st.metric("Operators Flagged", events["Operator_ID"].nunique())
     if "Barcode" in events.columns:
         st.metric("Unique Barcodes Flagged", events["Barcode"].nunique())
-    st.metric("Operators Flagged", events["Operator_ID"].nunique())
 
 def barcode_heatmap(events, barcode=None):
     data = events if barcode is None else events[events['Barcode'] == barcode]
