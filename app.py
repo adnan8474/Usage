@@ -1,109 +1,253 @@
-# ... [file header, imports, and data loading as before] ...
+import streamlit as st
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from typing import Optional, Tuple, List
+import datetime
 
-if uploaded_file is not None:
+from usage_intelligence.analysis import (
+    parse_timestamps, apply_flags, compute_scores, get_qc_status, get_error_events, get_training_status,
+    detect_anomalies
+)
+from usage_intelligence.visualization import (
+    heatmap_usage, hourly_bar, device_trend, flag_pie, interval_distribution,
+    behaviour_timeline, operator_compliance_chart, device_error_chart, qc_result_chart
+)
+
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="POCTIFY Usage Intelligence", layout="wide")
+st.title("POCTIFY Usage Intelligence: Supervisor Suite")
+
+# --- SIDEBAR LOGO & INSTRUCTIONS ---
+def show_logo(logo_path: Path) -> None:
+    if logo_path.is_file():
+        st.sidebar.image(str(logo_path), use_container_width=True)
+
+def show_instructions() -> None:
+    with st.sidebar.expander("ℹ️ Instructions", expanded=False):
+        st.markdown(
+            """
+            **POCTIFY Usage Intelligence** provides comprehensive audit, compliance, and analytics for POCT teams.
+
+            **How to use:**
+            1. Download & review the data template.
+            2. Upload anonymized logs (.csv/.xlsx).
+            3. Adjust detection and compliance parameters.
+            4. Explore dashboards, compliance panels, and flagged results.
+            5. Export audit trails and reports as needed.
+
+            **This tool supports:**  
+            - Operator certification/compliance audit  
+            - Device/location usage & error analytics  
+            - QC/QA tracking  
+            - Real-time and retrospective anomaly detection  
+            - Full audit/export for regulatory compliance
+
+            **Never upload patient names, MRNs, or clinical results.**
+            """
+        )
+
+# --- SIDEBAR DATA UPLOAD AND PARAMETERS ---
+def sidebar_upload_and_params() -> Tuple[Optional[pd.DataFrame], int, int, int, int]:
+    st.sidebar.header("Upload Data")
+    uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+    rapid_th = st.sidebar.slider("Rapid Succession Threshold (s)", 10, 300, 60, 10)
+    min_score = st.sidebar.slider("Min Suspicion Score", 0, 100, 10)
+    min_tests = st.sidebar.slider("Min Tests per Operator", 0, 100, 0)
+    anomaly_sensitivity = st.sidebar.slider("Anomaly Detection Sensitivity", 1, 10, 5)
+    st.sidebar.markdown("---")
     try:
-        df = read_uploaded_file(uploaded_file)
-        st.write("Columns in uploaded file:", df.columns.tolist())
-        validate_columns(df, REQUIRED_COLUMNS)
-        df = parse_timestamps(df)
-        df = ensure_unique_event_id(df)
-        df = compute_all_flags(df, suspicion_window, share_threshold, rapid_threshold)
-        
-        # --- SUMMARY CARDS ---
-        summary_cards(df)
-        
-        # --- FLAG BREAKDOWN TABLE ---
-        st.subheader("Flagged Events Table")
-        st.dataframe(df[df["Flagged"]], use_container_width=True)
-        
-        # --- OPERATOR/DEVICE/LOCATION OVERVIEWS ---
-        st.subheader("Operator Overview & Risk Scoring")
-        op_stats = df.groupby("Operator_ID").agg(
-            Event_Count=("Event_ID", "count"),
-            Flagged_Count=("Flagged", "sum"),
-            Rapid_Flag_Count=("Rapid_Flag", "sum"),
-            Switch_Flag_Count=("Switch_Flag", "sum"),
-            Device_Share_Flag_Count=("Device_Share_Flag", "sum")
-        )
-        # Scoring: Weighted sum (adjust weights as needed)
-        op_stats["Suspicion_Score"] = (
-            op_stats["Flagged_Count"] * 2 +
-            op_stats["Rapid_Flag_Count"] * 1.5 +
-            op_stats["Switch_Flag_Count"] * 1.25 +
-            op_stats["Device_Share_Flag_Count"] * 1
-        )
-        op_stats = op_stats.sort_values("Suspicion_Score", ascending=False)
-        st.dataframe(op_stats)
-        st.bar_chart(op_stats["Suspicion_Score"])
-        
-        st.subheader("Device Overview & Risk Scoring")
-        dev_stats = df.groupby("Device_ID").agg(
-            Event_Count=("Event_ID", "count"),
-            Flagged_Count=("Flagged", "sum"),
-            Operator_Count=("Operator_ID", "nunique"),
-            Device_Share_Flag_Count=("Device_Share_Flag", "sum")
-        )
-        dev_stats["Device_Risk_Score"] = (
-            dev_stats["Flagged_Count"] * 2 +
-            dev_stats["Operator_Count"] * 1.5 +
-            dev_stats["Device_Share_Flag_Count"] * 1
-        )
-        dev_stats = dev_stats.sort_values("Device_Risk_Score", ascending=False)
-        st.dataframe(dev_stats)
-        st.bar_chart(dev_stats["Device_Risk_Score"])
+        with open("usage_intelligence/data/template.csv", "r") as f:
+            st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
+    except Exception:
+        st.sidebar.warning("Template file not found.")
+    return uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity
 
-        if "Location" in df.columns:
-            st.subheader("Location Activity")
-            loc_stats = df.groupby("Location").agg(
-                Event_Count=("Event_ID", "count"),
-                Flagged_Count=("Flagged", "sum"),
-                Operator_Count=("Operator_ID", "nunique"),
-                Device_Count=("Device_ID", "nunique")
-            )
-            st.dataframe(loc_stats)
-            st.bar_chart(loc_stats["Event_Count"])
-        
-        # --- TEMPORAL TRENDS ---
-        st.subheader("Temporal Trends")
-        df["Hour"] = df["Timestamp"].dt.hour
-        df["Date"] = df["Timestamp"].dt.date
-        st.line_chart(df.groupby("Hour")["Event_ID"].count(), use_container_width=True)
-        st.line_chart(df.groupby("Date")["Event_ID"].count(), use_container_width=True)
-        
-        # --- HEATMAPS ---
-        st.subheader("Operator vs Hour Heatmap")
-        operator_heatmap(df)
-        st.subheader("Device vs Hour Heatmap")
-        device_heatmap(df)
-        
-        # --- DISTRIBUTIONS & OUTLIERS ---
-        st.subheader("Distribution: Event Count per Operator")
-        st.bar_chart(df["Operator_ID"].value_counts())
-        st.subheader("Distribution: Time Between Events (minutes)")
-        df_sorted = df.sort_values("Timestamp")
-        df_sorted["Time_Delta"] = df_sorted["Timestamp"].diff().dt.total_seconds() / 60
-        st.histogram(df_sorted["Time_Delta"].dropna(), bins=30)
-        
-        st.subheader("Operators with Unusually High Event Counts")
-        event_cutoff = op_stats["Event_Count"].mean() + 2 * op_stats["Event_Count"].std()
-        outlier_ops = op_stats[op_stats["Event_Count"] > event_cutoff]
-        st.dataframe(outlier_ops)
-        
-        # --- DRILLDOWNS ---
-        st.subheader("Operator Drilldown")
-        timeline_plot(df, id_col="Operator_ID")
-        st.subheader("Device Drilldown")
-        timeline_plot(df, id_col="Device_ID")
-        
-        # --- INVESTIGATION NOTES (OPTIONAL) ---
-        st.subheader("Investigation Notes")
-        investigation_notes(df)
-        
-        # --- EXPORT BUTTONS ---
-        export_buttons(df)
-
+# --- LOAD DATA ---
+def load_data(uploaded_file) -> Optional[pd.DataFrame]:
+    try:
+        if uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file, comment="#")
+        else:
+            df = pd.read_excel(uploaded_file)
+        return df
     except Exception as e:
-        st.error(f"An error occurred: {e}")
-        st.stop()
-else:
-    st.info("Please upload a file to begin.")
+        st.error(f"Failed to read file: {e}")
+        return None
+
+# --- SIDEBAR FILTERS ---
+def sidebar_filters(df: pd.DataFrame):
+    st.sidebar.subheader("🔍 Filter Data")
+    operator_ids = st.sidebar.multiselect("Operator ID", options=sorted(df['Operator_ID'].dropna().unique()))
+    locations = st.sidebar.multiselect("Location", options=sorted(df['Location'].dropna().unique()))
+    devices = st.sidebar.multiselect("Device ID", options=sorted(df['Device_ID'].dropna().unique()))
+    test_types = st.sidebar.multiselect("Test Type", options=sorted(df['Test_Type'].dropna().unique()))
+    date_range = st.sidebar.date_input(
+        "Date Range",
+        [df['Timestamp'].min().date(), df['Timestamp'].max().date()] if not df.empty else [datetime.date.today(), datetime.date.today()],
+    )
+    shifts = st.sidebar.multiselect(
+        "Shift",
+        options=["Day", "Evening", "Night"],
+        default=[]
+    )
+    return operator_ids, locations, devices, test_types, date_range, shifts
+
+def apply_filters(
+    df: pd.DataFrame,
+    operator_ids: List[str],
+    locations: List[str],
+    devices: List[str],
+    test_types: List[str],
+    date_range: List[datetime.date],
+    shifts: List[str]
+) -> pd.DataFrame:
+    if operator_ids:
+        df = df[df['Operator_ID'].isin(operator_ids)]
+    if locations:
+        df = df[df['Location'].isin(locations)]
+    if devices:
+        df = df[df['Device_ID'].isin(devices)]
+    if test_types:
+        df = df[df['Test_Type'].isin(test_types)]
+    if date_range and len(date_range) == 2:
+        start_date, end_date = date_range
+        df = df[
+            (df['Timestamp'].dt.date >= start_date)
+            & (df['Timestamp'].dt.date <= end_date)
+        ]
+    if shifts:
+        df['Shift'] = df['Timestamp'].dt.hour.apply(lambda h: "Day" if 7 <= h < 15 else "Evening" if 15 <= h < 23 else "Night")
+        df = df[df['Shift'].isin(shifts)]
+    return df
+
+# --- TERMS ---
+def show_terms() -> None:
+    st.markdown(
+        """
+        **Terms:** Internal POCT audit use only. No clinical decisions. Do not upload patient names, MRNs, or clinical results.
+        """
+    )
+
+# --- SUMMARY STATS ---
+def summary_statistics(df: pd.DataFrame):
+    st.markdown("### 📊 Quick Stats")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Tests", len(df))
+    col2.metric("Unique Operators", df['Operator_ID'].nunique())
+    col3.metric("Unique Devices", df['Device_ID'].nunique())
+    col4.metric("Locations", df['Location'].nunique())
+    col5.metric("Avg. Tests/Day", int(len(df)/df['Timestamp'].dt.date.nunique()) if not df.empty else 0)
+
+# --- MAIN APP ---
+def main():
+    logo_path = Path("POCTIFY Logo.png")
+    show_logo(logo_path)
+    show_instructions()
+
+    uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity = sidebar_upload_and_params()
+
+    if uploaded_file is not None:
+        df = load_data(uploaded_file)
+        if df is None:
+            st.stop()
+
+        try:
+            df = parse_timestamps(df)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+
+        # --- Compliance & QC/QA Panels ---
+        st.markdown("## 🛡️ Compliance & Quality Panels")
+        st.markdown("### Operator Certification & Compliance Status")
+        op_training = get_training_status(df)
+        st.dataframe(op_training, use_container_width=True)
+        st.plotly_chart(operator_compliance_chart(op_training), use_container_width=True)
+
+        st.markdown("### Device Errors & Maintenance")
+        device_errs = get_error_events(df)
+        st.dataframe(device_errs, use_container_width=True)
+        st.plotly_chart(device_error_chart(device_errs), use_container_width=True)
+
+        st.markdown("### QC/QA Results")
+        qc_data = get_qc_status(df)
+        st.dataframe(qc_data, use_container_width=True)
+        st.plotly_chart(qc_result_chart(qc_data), use_container_width=True)
+
+        # --- Core Usage & Audit Analytics ---
+        st.markdown("## 📈 Usage & Audit Analytics")
+        df = apply_flags(df, rapid_th)
+        scores = compute_scores(df)
+        scores = scores[scores['Suspicion_Score'] >= min_score]
+        if min_tests > 0:
+            op_counts = df.groupby('Operator_ID').size()
+            eligible_ops = op_counts[op_counts >= min_tests].index
+            scores = scores[scores['Operator_ID'].isin(eligible_ops)]
+
+        operator_ids, locations, devices, test_types, date_range, shifts = sidebar_filters(df)
+        filtered_ops = list(scores['Operator_ID'].unique())
+        if filtered_ops:
+            if operator_ids:
+                operator_ids = [op for op in operator_ids if op in filtered_ops]
+            else:
+                operator_ids = filtered_ops  # Only show filtered/flagged ops by default
+
+        df_filtered = apply_filters(df, operator_ids, locations, devices, test_types, date_range, shifts)
+
+        summary_statistics(df_filtered)
+
+        st.subheader("Suspicious Operators")
+        st.dataframe(scores, use_container_width=True)
+
+        st.markdown("#### Operator Behaviour Timeline")
+        op_selected = st.selectbox(
+            "Select Operator",
+            scores['Operator_ID'] if not scores.empty else [''],
+        )
+
+        # --- GRAPHS ---
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(heatmap_usage(df_filtered), use_container_width=True)
+            st.plotly_chart(hourly_bar(df_filtered), use_container_width=True)
+        with col2:
+            st.plotly_chart(device_trend(df_filtered), use_container_width=True)
+            st.plotly_chart(flag_pie(df_filtered), use_container_width=True)
+        st.plotly_chart(interval_distribution(df_filtered), use_container_width=True)
+        st.plotly_chart(behaviour_timeline(df_filtered, op_selected), use_container_width=True)
+
+        # --- Advanced Analytics: Anomaly Detection ---
+        st.markdown("## 🚨 Anomaly & Outlier Detection")
+        anomalies = detect_anomalies(df_filtered, sensitivity=anomaly_sensitivity)
+        st.dataframe(anomalies, use_container_width=True)
+        st.markdown("Anomalies highlight unusual test timing, usage, or operator/device patterns.")
+
+        # --- Export ---
+        st.subheader("Export & Audit Trail")
+        csv_data = df_filtered.to_csv(index=False)
+        st.download_button("Download Flags CSV", csv_data, file_name="flagged_summary.csv")
+        st.download_button("Export Operator Compliance", op_training.to_csv(index=False), file_name="operator_compliance.csv")
+        st.download_button("Export Device Errors", device_errs.to_csv(index=False), file_name="device_errors.csv")
+        st.download_button("Export QC/QA Results", qc_data.to_csv(index=False), file_name="qc_qa_results.csv")
+
+        # --- Deep Dive: More Stats & Controls ---
+        with st.expander("🔬 Deep Dive: More Analytics & Controls"):
+            st.markdown("**Tests per Operator**")
+            st.bar_chart(df_filtered['Operator_ID'].value_counts())
+            st.markdown("**Tests per Device**")
+            st.bar_chart(df_filtered['Device_ID'].value_counts())
+            st.markdown("**Tests per Location**")
+            st.bar_chart(df_filtered['Location'].value_counts())
+            st.markdown("**Hourly Distribution**")
+            st.bar_chart(df_filtered['Timestamp'].dt.hour.value_counts().sort_index())
+
+            # Add more: e.g. operator-device matrix, error code heatmaps, shift-based analysis, etc.
+
+    else:
+        st.info("Please upload a CSV or Excel file to begin.")
+
+    show_terms()
+
+if __name__ == "__main__":
+    main()
