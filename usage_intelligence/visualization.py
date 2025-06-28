@@ -24,8 +24,40 @@ def device_trend(df: pd.DataFrame):
 
 
 def flag_pie(df: pd.DataFrame):
-    flag_cols = ['RAPID', 'LOC_CONFLICT', 'HOURLY', 'DEVICE_HOP', 'SHIFT']
+    flag_cols = [
+        'RAPID',
+        'LOC_CONFLICT',
+        'HOURLY',
+        'DEVICE_HOP',
+        'SHIFT',
+        'SHIFT_VIOL',
+        'LOAD_DEV',
+        'COLOC',
+    ]
     counts = df[flag_cols].sum().reset_index()
     counts.columns = ['Flag', 'Count']
     fig = px.pie(counts, names='Flag', values='Count', title='Flag Distribution')
+    return fig
+
+
+def interval_distribution(df: pd.DataFrame):
+    df = df.sort_values('Timestamp')
+    df['Prev'] = df.groupby('Operator_ID')['Timestamp'].shift(1)
+    df['Interval'] = (df['Timestamp'] - df['Prev']).dt.total_seconds()
+    intervals = df['Interval'].dropna()
+    fig = px.histogram(intervals, nbins=50, title='Time Between Tests (s)')
+    return fig
+
+
+def behaviour_timeline(df: pd.DataFrame, operator: str):
+    sub = df[df['Operator_ID'] == operator].sort_values('Timestamp')
+    fig = px.scatter(
+        sub,
+        x='Timestamp',
+        y='Device_ID',
+        color=sub[['RAPID', 'LOC_CONFLICT', 'COLOC']].any(axis=1).map(
+            {True: 'Flagged', False: 'Normal'}
+        ),
+        title=f'Activity Timeline - {operator}',
+    )
     return fig

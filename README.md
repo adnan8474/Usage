@@ -9,4 +9,6 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app flags rapid succession tests, location conflicts, hourly density anomalies, device hopping, and shift consistency issues. It provides interactive charts and downloadable reports. Only non-patient data is allowed.
+The app flags barcode sharing and suspicious operator behaviour using probabilistic scoring. It includes heatmaps, density plots and operator timelines. Only anonymised, non-patient data should be used.
+
+**Note:** If timestamp parsing fails you will see the offending line numbers. Do not share patient or staff names in uploads.
