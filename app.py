@@ -1,4 +1,11 @@
-import sys
+from __future__ import annotations
+
+import io
+from pathlib import Path
+from typing import List, Tuple
+
+import pandas as pd
+import streamlit as stimport sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 """Streamlit dashboard for **POCTIFY Usage Intelligence**.
@@ -26,15 +33,6 @@ The interface is designed for audit purposes only and does not process
 patient identifiable data. It should be run inside a secure hospital
 network in compliance with ISO 15189 information governance.
 """
-
-from __future__ import annotations
-
-import io
-from pathlib import Path
-from typing import List, Tuple
-
-import pandas as pd
-import streamlit as st
 
 from usage_intelligence.analysis import (
     FLAG_COLUMNS,
