@@ -6,12 +6,11 @@ from typing import Optional, Tuple, List
 import datetime
 
 from usage_intelligence.analysis import (
-    parse_timestamps, apply_flags, compute_scores, get_qc_status, get_error_events, get_training_status,
-    detect_anomalies
+    parse_timestamps, apply_flags, compute_scores
 )
 from usage_intelligence.visualization import (
     heatmap_usage, hourly_bar, device_trend, flag_pie, interval_distribution,
-    behaviour_timeline, operator_compliance_chart, device_error_chart, qc_result_chart
+    behaviour_timeline
 )
 
 # --- PAGE CONFIG ---
@@ -33,13 +32,12 @@ def show_instructions() -> None:
             1. Download & review the data template.
             2. Upload anonymized logs (.csv/.xlsx).
             3. Adjust detection and compliance parameters.
-            4. Explore dashboards, compliance panels, and flagged results.
+            4. Explore dashboards and flagged results.
             5. Export audit trails and reports as needed.
 
             **This tool supports:**  
-            - Operator certification/compliance audit  
-            - Device/location usage & error analytics  
-            - QC/QA tracking  
+            - Operator compliance audit  
+            - Device/location usage analytics  
             - Real-time and retrospective anomaly detection  
             - Full audit/export for regulatory compliance
 
@@ -48,20 +46,19 @@ def show_instructions() -> None:
         )
 
 # --- SIDEBAR DATA UPLOAD AND PARAMETERS ---
-def sidebar_upload_and_params() -> Tuple[Optional[pd.DataFrame], int, int, int, int]:
+def sidebar_upload_and_params() -> Tuple[Optional[pd.DataFrame], int, int, int]:
     st.sidebar.header("Upload Data")
     uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     rapid_th = st.sidebar.slider("Rapid Succession Threshold (s)", 10, 300, 60, 10)
     min_score = st.sidebar.slider("Min Suspicion Score", 0, 100, 10)
     min_tests = st.sidebar.slider("Min Tests per Operator", 0, 100, 0)
-    anomaly_sensitivity = st.sidebar.slider("Anomaly Detection Sensitivity", 1, 10, 5)
     st.sidebar.markdown("---")
     try:
         with open("usage_intelligence/data/template.csv", "r") as f:
             st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
     except Exception:
         st.sidebar.warning("Template file not found.")
-    return uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity
+    return uploaded_file, rapid_th, min_score, min_tests
 
 # --- LOAD DATA ---
 def load_data(uploaded_file) -> Optional[pd.DataFrame]:
@@ -145,7 +142,7 @@ def main():
     show_logo(logo_path)
     show_instructions()
 
-    uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity = sidebar_upload_and_params()
+    uploaded_file, rapid_th, min_score, min_tests = sidebar_upload_and_params()
 
     if uploaded_file is not None:
         df = load_data(uploaded_file)
@@ -157,23 +154,6 @@ def main():
         except ValueError as e:
             st.error(str(e))
             st.stop()
-
-        # --- Compliance & QC/QA Panels ---
-        st.markdown("## 🛡️ Compliance & Quality Panels")
-        st.markdown("### Operator Certification & Compliance Status")
-        op_training = get_training_status(df)
-        st.dataframe(op_training, use_container_width=True)
-        st.plotly_chart(operator_compliance_chart(op_training), use_container_width=True)
-
-        st.markdown("### Device Errors & Maintenance")
-        device_errs = get_error_events(df)
-        st.dataframe(device_errs, use_container_width=True)
-        st.plotly_chart(device_error_chart(device_errs), use_container_width=True)
-
-        st.markdown("### QC/QA Results")
-        qc_data = get_qc_status(df)
-        st.dataframe(qc_data, use_container_width=True)
-        st.plotly_chart(qc_result_chart(qc_data), use_container_width=True)
 
         # --- Core Usage & Audit Analytics ---
         st.markdown("## 📈 Usage & Audit Analytics")
@@ -191,7 +171,7 @@ def main():
             if operator_ids:
                 operator_ids = [op for op in operator_ids if op in filtered_ops]
             else:
-                operator_ids = filtered_ops  # Only show filtered/flagged ops by default
+                operator_ids = filtered_ops
 
         df_filtered = apply_filters(df, operator_ids, locations, devices, test_types, date_range, shifts)
 
@@ -217,19 +197,10 @@ def main():
         st.plotly_chart(interval_distribution(df_filtered), use_container_width=True)
         st.plotly_chart(behaviour_timeline(df_filtered, op_selected), use_container_width=True)
 
-        # --- Advanced Analytics: Anomaly Detection ---
-        st.markdown("## 🚨 Anomaly & Outlier Detection")
-        anomalies = detect_anomalies(df_filtered, sensitivity=anomaly_sensitivity)
-        st.dataframe(anomalies, use_container_width=True)
-        st.markdown("Anomalies highlight unusual test timing, usage, or operator/device patterns.")
-
         # --- Export ---
         st.subheader("Export & Audit Trail")
         csv_data = df_filtered.to_csv(index=False)
         st.download_button("Download Flags CSV", csv_data, file_name="flagged_summary.csv")
-        st.download_button("Export Operator Compliance", op_training.to_csv(index=False), file_name="operator_compliance.csv")
-        st.download_button("Export Device Errors", device_errs.to_csv(index=False), file_name="device_errors.csv")
-        st.download_button("Export QC/QA Results", qc_data.to_csv(index=False), file_name="qc_qa_results.csv")
 
         # --- Deep Dive: More Stats & Controls ---
         with st.expander("🔬 Deep Dive: More Analytics & Controls"):
@@ -241,8 +212,6 @@ def main():
             st.bar_chart(df_filtered['Location'].value_counts())
             st.markdown("**Hourly Distribution**")
             st.bar_chart(df_filtered['Timestamp'].dt.hour.value_counts().sort_index())
-
-            # Add more: e.g. operator-device matrix, error code heatmaps, shift-based analysis, etc.
 
     else:
         st.info("Please upload a CSV or Excel file to begin.")
