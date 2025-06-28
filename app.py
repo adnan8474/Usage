@@ -89,7 +89,7 @@ def load_logo() -> None:
     """Render POCTIFY logo at the top of the sidebar if present."""
     logo_path = Path("POCTIFY Logo.png")
     if logo_path.is_file():
-        st.sidebar.image(str(logo_path), width=120, use_column_width=False)
+        st.sidebar.image(str(logo_path), width=120, use_container_width=False)
 
 def read_uploaded_file(uploaded: io.BytesIO) -> pd.DataFrame:
     """Read CSV or Excel upload into a DataFrame."""
@@ -136,7 +136,7 @@ def apply_filters(
             (data["Timestamp"].dt.date >= start)
             & (data["Timestamp"].dt.date <= end)
         ]
-    if min_score:
+    if min_score and {"Flagged", *FLAG_COLUMNS}.issubset(data.columns):
         scores = compute_scores(data)
         keep_ops = scores[scores["Suspicion_Score"] >= min_score]["Operator_ID"]
         data = data[data["Operator_ID"].isin(keep_ops)]
@@ -161,7 +161,7 @@ def sidebar_instructions() -> None:
             """
         )
 
-def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
+def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int, int]:
     """Render sidebar widgets and return filtered data and thresholds."""
     st.sidebar.header("Upload Data")
     suspicion_window = st.sidebar.slider(
@@ -206,9 +206,8 @@ def sidebar_controls(df: pd.DataFrame) -> Tuple[pd.DataFrame, int, int, int]:
         devices=devices,
         test_types=test_types,
         date_range=date_range,
-        min_score=min_score,
     )
-    return filtered, suspicion_window, share_threshold, rapid_threshold
+    return filtered, suspicion_window, share_threshold, rapid_threshold, min_score
 
 # ---------------------------------------------------------------------------
 # MAIN DISPLAY FUNCTIONS
@@ -409,13 +408,18 @@ def main():
         st.error(f"Failed to process file: {e}")
         st.stop()
 
-    filtered, suspicion_window, share_threshold, rapid_threshold = sidebar_controls(df)
+    filtered, suspicion_window, share_threshold, rapid_threshold, min_score = sidebar_controls(df)
     flagged_df = compute_all_flags(
         filtered,
         rapid_th=rapid_threshold,
         hop_threshold=share_threshold,
         window_minutes=suspicion_window,
     )
+
+    if min_score:
+        scores = compute_scores(flagged_df)
+        keep_ops = scores[scores["Suspicion_Score"] >= min_score]["Operator_ID"]
+        flagged_df = flagged_df[flagged_df["Operator_ID"].isin(keep_ops)]
 
     summary_cards(flagged_df)
     flag_breakdown_table(flagged_df)
