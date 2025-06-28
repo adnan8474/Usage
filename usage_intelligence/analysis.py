@@ -79,17 +79,21 @@ def compute_all_flags(
 
 def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate a suspicion score for each operator."""
-    grouped = df.groupby("Operator_ID").agg(
-        Flagged_Count=("Flagged", "sum"),
-        RAPID=("RAPID", "sum"),
-        LOC_CONFLICT=("LOC_CONFLICT", "sum"),
-        DEVICE_HOP=("DEVICE_HOP", "sum"),
-    )
+    agg_spec = {}
+    if "Flagged" in df.columns:
+        agg_spec["Flagged_Count"] = ("Flagged", "sum")
+    for col in FLAG_COLUMNS:
+        if col in df.columns:
+            agg_spec[col] = (col, "sum")
+    if not agg_spec:
+        return pd.DataFrame(columns=["Operator_ID", "Suspicion_Score", "Risk_Level"])
+
+    grouped = df.groupby("Operator_ID").agg(**agg_spec)
     grouped["Suspicion_Score"] = (
-        grouped["Flagged_Count"] * 2
-        + grouped["RAPID"] * 1.5
-        + grouped["LOC_CONFLICT"] * 1.25
-        + grouped["DEVICE_HOP"] * 1
+        grouped.get("Flagged_Count", 0) * 2
+        + grouped.get("RAPID", 0) * 1.5
+        + grouped.get("LOC_CONFLICT", 0) * 1.25
+        + grouped.get("DEVICE_HOP", 0) * 1
     )
 
     def risk(score: float) -> str:
