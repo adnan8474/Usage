@@ -1,3 +1,4 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a//dev/null b/app.py
 index 0000000000000000000000000000000000000000..00e73e662d9413eeaeef420e8a661918cfb6445f 100644
 --- a//dev/null
@@ -132,4 +133,6 @@ index 0000000000000000000000000000000000000000..00e73e662d9413eeaeef420e8a661918
 +    **Terms:** This tool is for internal POCT audit use only and should not be used for clinical decision-making. Do not upload patient names, MRNs, or clinical results.
 +    """
 +)
-
+ 
+EOF
+)
