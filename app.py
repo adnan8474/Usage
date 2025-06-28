@@ -1,143 +1,109 @@
-import pandas as pd
-import numpy as np
-from scipy import stats
+# ... [file header, imports, and data loading as before] ...
 
-FLAG_COLUMNS = [
-    'RAPID',
-    'LOC_CONFLICT',
-    'HOURLY',
-    'DEVICE_HOP',
-    'SHIFT',
-    'SHIFT_VIOL',
-    'LOAD_DEV',
-    'COLOC',
-]
-
-def parse_timestamps(df: pd.DataFrame, column: str = 'Timestamp') -> pd.DataFrame:
-    """Parse timestamps using multiple formats.
-    Raises ValueError listing offending values if parsing fails.
-    """
-    df = df.copy()
-    df[column + '_RAW'] = df[column]
-    df[column] = pd.to_datetime(df[column], errors='coerce', dayfirst=True)
-    if df[column].isna().any():
-        bad = df[df[column].isna()][column + '_RAW']
-        examples = ', '.join(f"line {i+2}: {v}" for i, v in bad.head(5).items())
-        raise ValueError(
-            f"Invalid timestamps detected: {examples}. Use DD/MM/YYYY HH:MM or ISO formats (e.g. 2025-06-28 09:12)."
+if uploaded_file is not None:
+    try:
+        df = read_uploaded_file(uploaded_file)
+        st.write("Columns in uploaded file:", df.columns.tolist())
+        validate_columns(df, REQUIRED_COLUMNS)
+        df = parse_timestamps(df)
+        df = ensure_unique_event_id(df)
+        df = compute_all_flags(df, suspicion_window, share_threshold, rapid_threshold)
+        
+        # --- SUMMARY CARDS ---
+        summary_cards(df)
+        
+        # --- FLAG BREAKDOWN TABLE ---
+        st.subheader("Flagged Events Table")
+        st.dataframe(df[df["Flagged"]], use_container_width=True)
+        
+        # --- OPERATOR/DEVICE/LOCATION OVERVIEWS ---
+        st.subheader("Operator Overview & Risk Scoring")
+        op_stats = df.groupby("Operator_ID").agg(
+            Event_Count=("Event_ID", "count"),
+            Flagged_Count=("Flagged", "sum"),
+            Rapid_Flag_Count=("Rapid_Flag", "sum"),
+            Switch_Flag_Count=("Switch_Flag", "sum"),
+            Device_Share_Flag_Count=("Device_Share_Flag", "sum")
         )
-    df = df.drop(columns=[column + '_RAW'])
-    return df
+        # Scoring: Weighted sum (adjust weights as needed)
+        op_stats["Suspicion_Score"] = (
+            op_stats["Flagged_Count"] * 2 +
+            op_stats["Rapid_Flag_Count"] * 1.5 +
+            op_stats["Switch_Flag_Count"] * 1.25 +
+            op_stats["Device_Share_Flag_Count"] * 1
+        )
+        op_stats = op_stats.sort_values("Suspicion_Score", ascending=False)
+        st.dataframe(op_stats)
+        st.bar_chart(op_stats["Suspicion_Score"])
+        
+        st.subheader("Device Overview & Risk Scoring")
+        dev_stats = df.groupby("Device_ID").agg(
+            Event_Count=("Event_ID", "count"),
+            Flagged_Count=("Flagged", "sum"),
+            Operator_Count=("Operator_ID", "nunique"),
+            Device_Share_Flag_Count=("Device_Share_Flag", "sum")
+        )
+        dev_stats["Device_Risk_Score"] = (
+            dev_stats["Flagged_Count"] * 2 +
+            dev_stats["Operator_Count"] * 1.5 +
+            dev_stats["Device_Share_Flag_Count"] * 1
+        )
+        dev_stats = dev_stats.sort_values("Device_Risk_Score", ascending=False)
+        st.dataframe(dev_stats)
+        st.bar_chart(dev_stats["Device_Risk_Score"])
 
-def rapid_succession(df: pd.DataFrame, threshold: int = 60) -> pd.DataFrame:
-    df = df.sort_values('Timestamp')
-    df['Prev_Time'] = df.groupby('Operator_ID')['Timestamp'].shift(1)
-    df['Diff'] = (df['Timestamp'] - df['Prev_Time']).dt.total_seconds()
-    df['RAPID'] = df['Diff'] < threshold
-    df['RAPID'] = df['RAPID'].fillna(False)
-    return df.drop(columns=['Prev_Time', 'Diff'])
+        if "Location" in df.columns:
+            st.subheader("Location Activity")
+            loc_stats = df.groupby("Location").agg(
+                Event_Count=("Event_ID", "count"),
+                Flagged_Count=("Flagged", "sum"),
+                Operator_Count=("Operator_ID", "nunique"),
+                Device_Count=("Device_ID", "nunique")
+            )
+            st.dataframe(loc_stats)
+            st.bar_chart(loc_stats["Event_Count"])
+        
+        # --- TEMPORAL TRENDS ---
+        st.subheader("Temporal Trends")
+        df["Hour"] = df["Timestamp"].dt.hour
+        df["Date"] = df["Timestamp"].dt.date
+        st.line_chart(df.groupby("Hour")["Event_ID"].count(), use_container_width=True)
+        st.line_chart(df.groupby("Date")["Event_ID"].count(), use_container_width=True)
+        
+        # --- HEATMAPS ---
+        st.subheader("Operator vs Hour Heatmap")
+        operator_heatmap(df)
+        st.subheader("Device vs Hour Heatmap")
+        device_heatmap(df)
+        
+        # --- DISTRIBUTIONS & OUTLIERS ---
+        st.subheader("Distribution: Event Count per Operator")
+        st.bar_chart(df["Operator_ID"].value_counts())
+        st.subheader("Distribution: Time Between Events (minutes)")
+        df_sorted = df.sort_values("Timestamp")
+        df_sorted["Time_Delta"] = df_sorted["Timestamp"].diff().dt.total_seconds() / 60
+        st.histogram(df_sorted["Time_Delta"].dropna(), bins=30)
+        
+        st.subheader("Operators with Unusually High Event Counts")
+        event_cutoff = op_stats["Event_Count"].mean() + 2 * op_stats["Event_Count"].std()
+        outlier_ops = op_stats[op_stats["Event_Count"] > event_cutoff]
+        st.dataframe(outlier_ops)
+        
+        # --- DRILLDOWNS ---
+        st.subheader("Operator Drilldown")
+        timeline_plot(df, id_col="Operator_ID")
+        st.subheader("Device Drilldown")
+        timeline_plot(df, id_col="Device_ID")
+        
+        # --- INVESTIGATION NOTES (OPTIONAL) ---
+        st.subheader("Investigation Notes")
+        investigation_notes(df)
+        
+        # --- EXPORT BUTTONS ---
+        export_buttons(df)
 
-def location_conflict(df: pd.DataFrame, travel_threshold: int = 300) -> pd.DataFrame:
-    df = df.sort_values('Timestamp')
-    df['Prev_Time'] = df.groupby('Operator_ID')['Timestamp'].shift(1)
-    df['Prev_Location'] = df.groupby('Operator_ID')['Location'].shift(1)
-    df['Time_Diff'] = (df['Timestamp'] - df['Prev_Time']).dt.total_seconds()
-    df['LOC_CONFLICT'] = (df['Location'] != df['Prev_Location']) & (df['Time_Diff'] < travel_threshold)
-    df['LOC_CONFLICT'] = df['LOC_CONFLICT'].fillna(False)
-    return df.drop(columns=['Prev_Time', 'Prev_Location', 'Time_Diff'])
-
-def hourly_density(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df['Hour'] = df['Timestamp'].dt.hour
-    hourly = df.groupby(['Operator_ID', 'Hour']).size().reset_index(name='Count')
-    hourly['Z'] = hourly.groupby('Operator_ID')['Count'].transform(lambda x: stats.zscore(x, nan_policy='omit'))
-    hourly['HOURLY'] = hourly['Z'] > 2
-    hourly['HOURLY'] = hourly['HOURLY'].fillna(False)
-    df = df.merge(hourly[['Operator_ID', 'Hour', 'HOURLY']], on=['Operator_ID', 'Hour'], how='left')
-    df['HOURLY'] = df['HOURLY'].fillna(False)
-    return df.drop(columns=['Hour'])
-
-def device_hopping(df: pd.DataFrame, hop_threshold: int = 3, window_minutes: int = 5) -> pd.DataFrame:
-    df = df.sort_values('Timestamp')
-    windows = []
-    for op, group in df.groupby('Operator_ID'):
-        times = group['Timestamp']
-        devices = group['Device_ID']
-        counts = []
-        for idx, ts in enumerate(times):
-            start = ts - pd.Timedelta(minutes=window_minutes)
-            mask = (times >= start) & (times <= ts)
-            counts.append(devices[mask].nunique())
-        windows.extend(counts)
-    df['DEVICES_WINDOW'] = windows
-    df['DEVICE_HOP'] = df['DEVICES_WINDOW'] > hop_threshold
-    df['DEVICE_HOP'] = df['DEVICE_HOP'].fillna(False)
-    return df.drop(columns=['DEVICES_WINDOW'])
-
-def shift_consistency(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df['Shift'] = df['Timestamp'].dt.floor('8H')
-    shift_counts = df.groupby(['Operator_ID', 'Shift']).size().reset_index(name='Shift_Count')
-    median_shift = shift_counts.groupby('Operator_ID')['Shift_Count'].median()
-    shift_counts = shift_counts.join(median_shift, on='Operator_ID', rsuffix='_MED')
-    shift_counts['SHIFT'] = abs(shift_counts['Shift_Count'] - shift_counts['Shift_Count_MED']) > 3
-    df = df.merge(shift_counts[['Operator_ID', 'Shift', 'SHIFT']], on=['Operator_ID', 'Shift'], how='left')
-    df['SHIFT'] = df['SHIFT'].fillna(False)
-    return df.drop(columns=['Shift'])
-
-def shift_pattern_violation(df: pd.DataFrame) -> pd.DataFrame:
-    """Flag tests occurring at unusual hours."""
-    df = df.copy()
-    df['Hour'] = df['Timestamp'].dt.hour
-    df['SHIFT_VIOL'] = (df['Hour'] < 6) | (df['Hour'] > 22)
-    df['SHIFT_VIOL'] = df['SHIFT_VIOL'].fillna(False)
-    return df.drop(columns=['Hour'])
-
-def test_load_deviation(df: pd.DataFrame) -> pd.DataFrame:
-    """Flag operators with test load far above site average."""
-    op_counts = df.groupby('Operator_ID').size()
-    mean_tests = op_counts.mean()
-    heavy_ops = op_counts[op_counts > 1.5 * mean_tests].index
-    df['LOAD_DEV'] = df['Operator_ID'].isin(heavy_ops)
-    df['LOAD_DEV'] = df['LOAD_DEV'].fillna(False)
-    return df
-
-def co_location_conflict(df: pd.DataFrame) -> pd.DataFrame:
-    """Same operator and timestamp but different devices/locations."""
-    dup = df.groupby(['Operator_ID', 'Timestamp']).agg({'Device_ID': 'nunique', 'Location': 'nunique'})
-    flagged = dup[(dup['Device_ID'] > 1) | (dup['Location'] > 1)].index
-    df['COLOC'] = df.set_index(['Operator_ID', 'Timestamp']).index.isin(flagged)
-    df['COLOC'] = df['COLOC'].fillna(False)
-    return df
-
-def apply_flags(df: pd.DataFrame, rapid_th: int = 60) -> pd.DataFrame:
-    """Apply all flagging heuristics to the dataframe."""
-    df = rapid_succession(df, rapid_th)
-    df = location_conflict(df)
-    df = hourly_density(df)
-    df = device_hopping(df)
-    df = shift_consistency(df)
-    df = shift_pattern_violation(df)
-    df = test_load_deviation(df)
-    df = co_location_conflict(df)
-    return df
-
-def misuse_probability(score: float) -> float:
-    """Return probability estimate from 0-1 based on suspicion score."""
-    return float(1 / (1 + np.exp(-0.05 * (score - 50))))
-
-def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute suspicion/risk scores for each operator."""
-    score_df = df.groupby('Operator_ID')[FLAG_COLUMNS].sum().reset_index()
-    score_df['Suspicion_Score'] = (
-        score_df[FLAG_COLUMNS].sum(axis=1) / len(FLAG_COLUMNS) * 100
-    )
-    score_df['Probability'] = score_df['Suspicion_Score'].apply(misuse_probability)
-    score_df['Risk_Level'] = pd.cut(
-        score_df['Probability'],
-        bins=[0, 0.33, 0.66, 1],
-        labels=['Low', 'Medium', 'High'],
-    )
-    score_df['Total_Tests'] = df.groupby('Operator_ID').size().values
-    score_df = score_df.sort_values('Suspicion_Score', ascending=False)
-    return score_df
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+        st.stop()
+else:
+    st.info("Please upload a file to begin.")
