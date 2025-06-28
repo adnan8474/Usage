@@ -2,9 +2,11 @@ import streamlit as st
 import plotly.express as px
 
 def summary_cards(events):
+    """Display key metrics summarising the flagged dataset."""
     st.metric("Flagged Events", len(events))
-    st.metric("Unique Barcodes Flagged", events['Barcode'].nunique())
-    st.metric("Operators Flagged", events['Operator_ID'].nunique())
+    if "Barcode" in events.columns:
+        st.metric("Unique Barcodes Flagged", events["Barcode"].nunique())
+    st.metric("Operators Flagged", events["Operator_ID"].nunique())
 
 def barcode_heatmap(events, barcode=None):
     data = events if barcode is None else events[events['Barcode'] == barcode]
@@ -34,7 +36,11 @@ def rules_panel(rules):
         st.write(f"- {rule.__doc__ or rule.__name__}")
 
 def event_table(events):
-    return events[['Timestamp', 'Barcode', 'Operator_ID', 'Device_ID', 'Flag', 'Suspicion_Score']]
+    """Return a tidy dataframe for display of flagged events."""
+    cols = ["Timestamp", "Operator_ID", "Device_ID", "Flag", "Suspicion_Score"]
+    if "Barcode" in events.columns:
+        cols.insert(1, "Barcode")
+    return events[cols]
 
 def investigation_notes(tracker, event_id):
     st.markdown("### Investigation Notes")
