@@ -1,0 +1,6 @@
+# Example anonymised log file. Do NOT include patient names or results.
+Timestamp,Operator_ID,Location,Device_ID,Test_Type
+2025-06-28 09:12,OP123,ED,DEV001,Glucose
+2025-06-28 09:13,OP123,ICU,DEV002,Lactate
+2025-06-28 09:20,OP456,ED,DEV001,Glucose
+2025-06-28 10:05,OP456,ED,DEV001,Glucose
