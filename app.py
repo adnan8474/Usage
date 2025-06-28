@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
 """Streamlit dashboard for **POCTIFY Usage Intelligence**.
 
 This application provides an interactive interface for analysing
