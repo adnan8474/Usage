@@ -1,22 +1,22 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, List
 import datetime
 
-from usage_intelligence.analysis import parse_timestamps, apply_flags, compute_scores
+from usage_intelligence.analysis import (
+    parse_timestamps, apply_flags, compute_scores, get_qc_status, get_error_events, get_training_status,
+    detect_anomalies
+)
 from usage_intelligence.visualization import (
-    heatmap_usage,
-    hourly_bar,
-    device_trend,
-    flag_pie,
-    interval_distribution,
-    behaviour_timeline,
+    heatmap_usage, hourly_bar, device_trend, flag_pie, interval_distribution,
+    behaviour_timeline, operator_compliance_chart, device_error_chart, qc_result_chart
 )
 
-# --- CONFIGURE PAGE ---
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="POCTIFY Usage Intelligence", layout="wide")
-st.title("POCTIFY Usage Intelligence")
+st.title("POCTIFY Usage Intelligence: Supervisor Suite")
 
 # --- SIDEBAR LOGO & INSTRUCTIONS ---
 def show_logo(logo_path: Path) -> None:
@@ -27,35 +27,41 @@ def show_instructions() -> None:
     with st.sidebar.expander("ℹ️ Instructions", expanded=False):
         st.markdown(
             """
-            **POCTIFY Usage Intelligence** helps POCT teams spot barcode sharing and abnormal device usage.
+            **POCTIFY Usage Intelligence** provides comprehensive audit, compliance, and analytics for POCT teams.
 
-            **Steps**:
-            1. Download the CSV template.
-            2. Upload your anonymised log file (.csv or .xlsx).
-            3. Adjust detection parameters.
-            4. Explore dashboards and flagged results.
+            **How to use:**
+            1. Download & review the data template.
+            2. Upload anonymized logs (.csv/.xlsx).
+            3. Adjust detection and compliance parameters.
+            4. Explore dashboards, compliance panels, and flagged results.
+            5. Export audit trails and reports as needed.
 
-            **Notes**:
-            - Use the provided template format.
-            - Invalid dates will be highlighted if parsing fails.
-            - Avoid uploading patient names, MRNs, or test results.
+            **This tool supports:**  
+            - Operator certification/compliance audit  
+            - Device/location usage & error analytics  
+            - QC/QA tracking  
+            - Real-time and retrospective anomaly detection  
+            - Full audit/export for regulatory compliance
+
+            **Never upload patient names, MRNs, or clinical results.**
             """
         )
 
 # --- SIDEBAR DATA UPLOAD AND PARAMETERS ---
-def sidebar_upload_and_params() -> Tuple[Optional[pd.DataFrame], int, int, int]:
+def sidebar_upload_and_params() -> Tuple[Optional[pd.DataFrame], int, int, int, int]:
     st.sidebar.header("Upload Data")
     uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-    rapid_th = st.sidebar.slider("Rapid succession threshold (s)", min_value=10, max_value=300, value=60, step=10)
+    rapid_th = st.sidebar.slider("Rapid Succession Threshold (s)", 10, 300, 60, 10)
     min_score = st.sidebar.slider("Min Suspicion Score", 0, 100, 10)
     min_tests = st.sidebar.slider("Min Tests per Operator", 0, 100, 0)
+    anomaly_sensitivity = st.sidebar.slider("Anomaly Detection Sensitivity", 1, 10, 5)
     st.sidebar.markdown("---")
     try:
         with open("usage_intelligence/data/template.csv", "r") as f:
             st.sidebar.download_button("Download Template", f.read(), file_name="template.csv")
     except Exception:
         st.sidebar.warning("Template file not found.")
-    return uploaded_file, rapid_th, min_score, min_tests
+    return uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity
 
 # --- LOAD DATA ---
 def load_data(uploaded_file) -> Optional[pd.DataFrame]:
@@ -69,14 +75,32 @@ def load_data(uploaded_file) -> Optional[pd.DataFrame]:
         st.error(f"Failed to read file: {e}")
         return None
 
-# --- FILTERS ---
-def filter_data(
+# --- SIDEBAR FILTERS ---
+def sidebar_filters(df: pd.DataFrame):
+    st.sidebar.subheader("🔍 Filter Data")
+    operator_ids = st.sidebar.multiselect("Operator ID", options=sorted(df['Operator_ID'].dropna().unique()))
+    locations = st.sidebar.multiselect("Location", options=sorted(df['Location'].dropna().unique()))
+    devices = st.sidebar.multiselect("Device ID", options=sorted(df['Device_ID'].dropna().unique()))
+    test_types = st.sidebar.multiselect("Test Type", options=sorted(df['Test_Type'].dropna().unique()))
+    date_range = st.sidebar.date_input(
+        "Date Range",
+        [df['Timestamp'].min().date(), df['Timestamp'].max().date()] if not df.empty else [datetime.date.today(), datetime.date.today()],
+    )
+    shifts = st.sidebar.multiselect(
+        "Shift",
+        options=["Day", "Evening", "Night"],
+        default=[]
+    )
+    return operator_ids, locations, devices, test_types, date_range, shifts
+
+def apply_filters(
     df: pd.DataFrame,
     operator_ids: List[str],
     locations: List[str],
     devices: List[str],
     test_types: List[str],
-    date_range: List[datetime.date]
+    date_range: List[datetime.date],
+    shifts: List[str]
 ) -> pd.DataFrame:
     if operator_ids:
         df = df[df['Operator_ID'].isin(operator_ids)]
@@ -92,38 +116,28 @@ def filter_data(
             (df['Timestamp'].dt.date >= start_date)
             & (df['Timestamp'].dt.date <= end_date)
         ]
+    if shifts:
+        df['Shift'] = df['Timestamp'].dt.hour.apply(lambda h: "Day" if 7 <= h < 15 else "Evening" if 15 <= h < 23 else "Night")
+        df = df[df['Shift'].isin(shifts)]
     return df
-
-# --- SIDEBAR FILTERS ---
-def sidebar_filters(df: pd.DataFrame):
-    st.sidebar.subheader("🔍 Filter Data")
-    operator_ids = st.sidebar.multiselect("Operator ID", options=sorted(df['Operator_ID'].dropna().unique()))
-    locations = st.sidebar.multiselect("Location", options=sorted(df['Location'].dropna().unique()))
-    devices = st.sidebar.multiselect("Device ID", options=sorted(df['Device_ID'].dropna().unique()))
-    test_types = st.sidebar.multiselect("Test Type", options=sorted(df['Test_Type'].dropna().unique()))
-    date_range = st.sidebar.date_input(
-        "Date Range",
-        [df['Timestamp'].min().date(), df['Timestamp'].max().date()] if not df.empty else [datetime.date.today(), datetime.date.today()],
-    )
-    return operator_ids, locations, devices, test_types, date_range
 
 # --- TERMS ---
 def show_terms() -> None:
     st.markdown(
         """
-        **Terms:** This tool is for internal POCT audit use only and should not be used for clinical decision-making. Do not upload patient names, MRNs, or clinical results.
+        **Terms:** Internal POCT audit use only. No clinical decisions. Do not upload patient names, MRNs, or clinical results.
         """
     )
 
 # --- SUMMARY STATS ---
 def summary_statistics(df: pd.DataFrame):
-    st.markdown("### 📊 Quick Overview")
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("### 📊 Quick Stats")
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Total Tests", len(df))
     col2.metric("Unique Operators", df['Operator_ID'].nunique())
     col3.metric("Unique Devices", df['Device_ID'].nunique())
     col4.metric("Locations", df['Location'].nunique())
-    # Add more metrics if you want (e.g., mean/median tests per operator, busiest day/hour, etc.)
+    col5.metric("Avg. Tests/Day", int(len(df)/df['Timestamp'].dt.date.nunique()) if not df.empty else 0)
 
 # --- MAIN APP ---
 def main():
@@ -131,7 +145,7 @@ def main():
     show_logo(logo_path)
     show_instructions()
 
-    uploaded_file, rapid_th, min_score, min_tests = sidebar_upload_and_params()
+    uploaded_file, rapid_th, min_score, min_tests, anomaly_sensitivity = sidebar_upload_and_params()
 
     if uploaded_file is not None:
         df = load_data(uploaded_file)
@@ -144,7 +158,25 @@ def main():
             st.error(str(e))
             st.stop()
 
-        # Detect flags and compute suspicion scores
+        # --- Compliance & QC/QA Panels ---
+        st.markdown("## 🛡️ Compliance & Quality Panels")
+        st.markdown("### Operator Certification & Compliance Status")
+        op_training = get_training_status(df)
+        st.dataframe(op_training, use_container_width=True)
+        st.plotly_chart(operator_compliance_chart(op_training), use_container_width=True)
+
+        st.markdown("### Device Errors & Maintenance")
+        device_errs = get_error_events(df)
+        st.dataframe(device_errs, use_container_width=True)
+        st.plotly_chart(device_error_chart(device_errs), use_container_width=True)
+
+        st.markdown("### QC/QA Results")
+        qc_data = get_qc_status(df)
+        st.dataframe(qc_data, use_container_width=True)
+        st.plotly_chart(qc_result_chart(qc_data), use_container_width=True)
+
+        # --- Core Usage & Audit Analytics ---
+        st.markdown("## 📈 Usage & Audit Analytics")
         df = apply_flags(df, rapid_th)
         scores = compute_scores(df)
         scores = scores[scores['Suspicion_Score'] >= min_score]
@@ -153,8 +185,7 @@ def main():
             eligible_ops = op_counts[op_counts >= min_tests].index
             scores = scores[scores['Operator_ID'].isin(eligible_ops)]
 
-        # Filter data
-        operator_ids, locations, devices, test_types, date_range = sidebar_filters(df)
+        operator_ids, locations, devices, test_types, date_range, shifts = sidebar_filters(df)
         filtered_ops = list(scores['Operator_ID'].unique())
         if filtered_ops:
             if operator_ids:
@@ -162,9 +193,8 @@ def main():
             else:
                 operator_ids = filtered_ops  # Only show filtered/flagged ops by default
 
-        df_filtered = filter_data(df, operator_ids, locations, devices, test_types, date_range)
+        df_filtered = apply_filters(df, operator_ids, locations, devices, test_types, date_range, shifts)
 
-        # Show stats
         summary_statistics(df_filtered)
 
         st.subheader("Suspicious Operators")
@@ -187,21 +217,32 @@ def main():
         st.plotly_chart(interval_distribution(df_filtered), use_container_width=True)
         st.plotly_chart(behaviour_timeline(df_filtered, op_selected), use_container_width=True)
 
-        # --- TABLES & EXPORT ---
-        st.subheader("Flagged Data")
-        st.dataframe(df_filtered, use_container_width=True)
+        # --- Advanced Analytics: Anomaly Detection ---
+        st.markdown("## 🚨 Anomaly & Outlier Detection")
+        anomalies = detect_anomalies(df_filtered, sensitivity=anomaly_sensitivity)
+        st.dataframe(anomalies, use_container_width=True)
+        st.markdown("Anomalies highlight unusual test timing, usage, or operator/device patterns.")
+
+        # --- Export ---
+        st.subheader("Export & Audit Trail")
         csv_data = df_filtered.to_csv(index=False)
         st.download_button("Download Flags CSV", csv_data, file_name="flagged_summary.csv")
+        st.download_button("Export Operator Compliance", op_training.to_csv(index=False), file_name="operator_compliance.csv")
+        st.download_button("Export Device Errors", device_errs.to_csv(index=False), file_name="device_errors.csv")
+        st.download_button("Export QC/QA Results", qc_data.to_csv(index=False), file_name="qc_qa_results.csv")
 
-        # --- ADVANCED ANALYTICS ---
-        with st.expander("More Statistics & Controls"):
+        # --- Deep Dive: More Stats & Controls ---
+        with st.expander("🔬 Deep Dive: More Analytics & Controls"):
             st.markdown("**Tests per Operator**")
             st.bar_chart(df_filtered['Operator_ID'].value_counts())
             st.markdown("**Tests per Device**")
             st.bar_chart(df_filtered['Device_ID'].value_counts())
             st.markdown("**Tests per Location**")
             st.bar_chart(df_filtered['Location'].value_counts())
-            # You can add more: e.g. time-between-tests hist, operator-device matrix, etc.
+            st.markdown("**Hourly Distribution**")
+            st.bar_chart(df_filtered['Timestamp'].dt.hour.value_counts().sort_index())
+
+            # Add more: e.g. operator-device matrix, error code heatmaps, shift-based analysis, etc.
 
     else:
         st.info("Please upload a CSV or Excel file to begin.")
