@@ -1,0 +1,29 @@
+{
+  "name": "codeshare-watchtower",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "papaparse": "^5.4.1",
+    "dayjs": "^1.11.10",
+    "lodash.groupby": "^1.0.1",
+    "chart.js": "^4.4.1",
+    "react-chartjs-2": "^5.2.0",
+    "chartjs-adapter-dayjs": "^1.1.0",
+    "chartjs-chart-box-and-violin-plot": "^4.1.0",
+    "jspdf": "^2.5.1"
+  },
+  "devDependencies": {
+    "vite": "^4.5.0",
+    "@vitejs/plugin-react": "^3.1.0",
+    "tailwindcss": "^3.4.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0"
+  }
+}
