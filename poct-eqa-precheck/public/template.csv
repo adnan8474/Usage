@@ -1,0 +1,4 @@
+device_id,analyte,test_date,measured_value,target_value
+Device A,Glucose,01/06/2025,5.6,5.5
+Device B,Glucose,01/06/2025,6.2,5.5
+Device C,Glucose,01/06/2025,4.9,5.5
